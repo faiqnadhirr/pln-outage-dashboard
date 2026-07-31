@@ -84,6 +84,7 @@ function bucketize(dates, dt, out, gran) {
     if (gran === "Quarterly") return { k: y + "Q" + Math.ceil(+mo / 3), l: "Q" + Math.ceil(+mo / 3) };
     const date = new Date(+y, +mo - 1, da), onejan = new Date(+y, 0, 1);
     const wk = Math.ceil((((date - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+    if (gran === "Bi-weekly") { const bw = Math.ceil(wk / 2); return { k: y + "B" + String(bw).padStart(2, "0"), l: "BW" + bw }; }
     return { k: y + "W" + String(wk).padStart(2, "0"), l: "W" + wk };
   };
   const map = new Map();
@@ -99,8 +100,8 @@ export function TimeSeries({ dates, dt, out, height = 240 }) {
   const data = useMemo(() => bucketize(dates, dt, out, gran), [dates, dt, out, gran]);
   return (
     <div>
-      <div className="flex gap-1 mb-2">
-        {["Daily", "Weekly", "Monthly", "Quarterly"].map((g) => (
+      <div className="flex gap-1 mb-2 flex-wrap">
+        {["Daily", "Weekly", "Bi-weekly", "Monthly", "Quarterly"].map((g) => (
           <button key={g} onClick={() => setGran(g)}
             className={`px-2.5 py-1 text-[11px] rounded border ${gran === g ? "bg-navy text-white border-navy" : "border-line text-slate hover:bg-surface"}`}>{g}</button>
         ))}
@@ -305,6 +306,104 @@ export function Drawer({ site, months, onClose }) {
           </section>
           <div className="text-[11px] text-mut">Provenance: {[site.in_avail && "availability", site.in_events && "events", site.in_config && "config"].filter(Boolean).join(" · ") || "—"}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- date-range control ---------- */
+export function RangeControl({ dates, range, setRange }) {
+  const fmtD = (i) => { const d = dates[i]; return `${d.slice(6, 8)} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+d.slice(4, 6) - 1]}`; };
+  const N = dates.length;
+  const presets = [
+    { l: "Full H1", s: 0, e: N - 1 },
+    { l: "Last 30d", s: Math.max(0, N - 30), e: N - 1 },
+    { l: "Last 14d", s: Math.max(0, N - 14), e: N - 1 },
+    { l: "Last 7d", s: Math.max(0, N - 7), e: N - 1 },
+  ];
+  const active = (p) => range.s === p.s && range.e === p.e;
+  const toInput = (i) => `${dates[i].slice(0, 4)}-${dates[i].slice(4, 6)}-${dates[i].slice(6, 8)}`;
+  const fromInput = (v) => { const key = v.replaceAll("-", ""); let idx = dates.indexOf(key); if (idx < 0) { idx = dates.findIndex((d) => d >= key); if (idx < 0) idx = N - 1; } return idx; };
+  const full = range.s === 0 && range.e === N - 1;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[12px]">
+      <span className="text-mut font-semibold uppercase tracking-wide text-[10px]">Period</span>
+      {presets.map((p) => (
+        <button key={p.l} onClick={() => setRange({ s: p.s, e: p.e })}
+          className={`px-2.5 py-1 rounded border ${active(p) ? "bg-navy text-white border-navy" : "border-line text-slate hover:bg-surface"}`}>{p.l}</button>
+      ))}
+      <span className="w-px h-5 bg-line mx-1" />
+      <span className="text-mut">Custom</span>
+      <input type="date" min={toInput(0)} max={toInput(N - 1)} value={toInput(range.s)} onChange={(e) => setRange((r) => ({ ...r, s: Math.min(fromInput(e.target.value), r.e) }))} className="border border-line rounded px-1.5 py-1" />
+      <span className="text-mut">→</span>
+      <input type="date" min={toInput(0)} max={toInput(N - 1)} value={toInput(range.e)} onChange={(e) => setRange((r) => ({ ...r, e: Math.max(fromInput(e.target.value), r.s) }))} className="border border-line rounded px-1.5 py-1" />
+      {!full && <span className="text-amber font-medium">{fmtD(range.s)} – {fmtD(range.e)} ({range.e - range.s + 1}d)</span>}
+    </div>
+  );
+}
+
+/* ---------- pattern × repeat matrix ---------- */
+export function PatternMatrix({ sites, onPick }) {
+  const pats = ["both", "backup_fail", "grid_backup_ok", "minimal", "no_data"];
+  const reps = ["chronic", "intermittent", "one_off", "none"];
+  const grid = {};
+  pats.forEach((p) => { grid[p] = {}; reps.forEach((r) => (grid[p][r] = 0)); });
+  sites.forEach((s) => { if (grid[s.pattern]) grid[s.pattern][s.repeat] = (grid[s.pattern][s.repeat] || 0) + 1; });
+  const maxV = Math.max(1, ...pats.flatMap((p) => reps.map((r) => grid[p][r])));
+  return (
+    <div className="overflow-auto">
+      <table className="border-collapse text-[12px]">
+        <thead><tr><th className="p-1.5 text-left text-mut"></th>{reps.map((r) => <th key={r} className="p-1.5 text-mut font-semibold">{REPEAT[r].label === "—" ? "None" : REPEAT[r].label}</th>)}</tr></thead>
+        <tbody>
+          {pats.map((p) => (
+            <tr key={p}>
+              <td className="p-1.5 text-slate whitespace-nowrap">{PATTERN[p].label}</td>
+              {reps.map((r) => {
+                const v = grid[p][r], a = v / maxV;
+                return <td key={r} className="p-1"><div onClick={() => v && onPick && onPick(p, r)}
+                  className="rounded text-center py-1.5 px-2 cursor-pointer tabular font-medium"
+                  style={{ background: v ? `rgba(31,42,68,${0.08 + a * 0.7})` : "#F5F7FA", color: a > 0.5 ? "#fff" : "#141821" }}>{v ? fmtInt(v) : "·"}</div></td>;
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="text-[11px] text-mut mt-2">Rows = problem pattern · columns = how often · click a cell to filter. Darker = more sites.</div>
+    </div>
+  );
+}
+
+/* ---------- horizontal group bar chart (tabs) ---------- */
+export function GroupBars({ rows, labelKey, valueKey = "power_dt_hours", n = 12, onPick }) {
+  const d = rows.slice(0, n).map((r) => ({ ...r, name: String(r[labelKey] || "—").replace(/^(TO|NOP) /, ""), v: Math.round(r[valueKey]) }));
+  return (
+    <ResponsiveContainer width="100%" height={Math.max(160, d.length * 26)}>
+      <BarChart data={d} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
+        onClick={(e) => e && e.activeLabel && onPick && onPick(d.find((x) => x.name === e.activeLabel))}>
+        <XAxis type="number" tick={{ fontSize: 10, fill: "#7A8598" }} tickFormatter={(v) => v >= 1000 ? v / 1000 + "k" : v} />
+        <YAxis type="category" dataKey="name" width={118} tick={{ fontSize: 10, fill: "#141821" }} />
+        <Tooltip formatter={(v) => [fmtInt(v) + " h", "Power downtime"]} />
+        <Bar dataKey="v" radius={[0, 3, 3, 0]} cursor="pointer">{d.map((e, i) => <Cell key={i} fill={i === 0 ? "#B23A2E" : i < 3 ? "#C8862B" : "#1F2A44"} />)}</Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ---------- genset-adjusted donut ---------- */
+export function GensetDonut({ held, down }) {
+  const total = held + down || 1;
+  const seg = [{ l: "Backup held", v: held, c: "#2E7D32" }, { l: "Site went down", v: down, c: "#B23A2E" }];
+  let acc = 0; const R = 52, C = 2 * Math.PI * R;
+  return (
+    <div className="flex items-center gap-5">
+      <svg viewBox="0 0 140 140" width="130" height="130">
+        <circle cx="70" cy="70" r={R} fill="none" stroke="#EEF2F7" strokeWidth="16" />
+        {seg.map((s, i) => { const frac = s.v / total, dash = frac * C; const el = <circle key={i} cx="70" cy="70" r={R} fill="none" stroke={s.c} strokeWidth="16" strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={-acc * C} transform="rotate(-90 70 70)" />; acc += frac; return el; })}
+        <text x="70" y="66" textAnchor="middle" fontSize="20" fontWeight="bold" fill="#1F2A44">{Math.round((held / total) * 100)}%</text>
+        <text x="70" y="82" textAnchor="middle" fontSize="9" fill="#7A8598">held</text>
+      </svg>
+      <div className="space-y-2">
+        {seg.map((s) => <div key={s.l} className="flex items-center gap-2 text-[13px]"><span className="w-3 h-3 rounded-sm" style={{ background: s.c }} /><span className="tabular font-medium text-navy">{fmtInt(s.v)}</span><span className="text-mut">{s.l}</span></div>)}
       </div>
     </div>
   );
