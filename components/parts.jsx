@@ -251,7 +251,7 @@ export function Drawer({ site, months, onClose }) {
   const Row = ({ k, v }) => <div className="flex justify-between py-1.5 border-b border-line/70 text-[13px]"><span className="text-mut">{k}</span><span className="text-navy font-medium tabular text-right">{v}</span></div>;
   const pat = PATTERN[site.pattern];
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+    <div className="fixed inset-0 z-[3000] flex justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-ink/40" />
       <div className="relative w-full max-w-md bg-card h-full overflow-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-navy text-white px-5 py-4 flex items-start justify-between z-10">

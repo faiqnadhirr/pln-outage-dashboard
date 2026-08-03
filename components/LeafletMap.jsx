@@ -14,15 +14,16 @@ function FitBounds({ pts }) {
 }
 
 export default function LeafletMap({ sites, onPick, valueKey = "power_dt_hours" }) {
-  const pts = useMemo(
+  const all = useMemo(
     () => sites.filter((s) => s.lat && s.lng && s.lat > -12 && s.lat < 8 && s.lng > 90 && s.lng < 120),
     [sites]
   );
+  const pts = useMemo(() => [...all].sort((a, b) => (b[valueKey] || 0) - (a[valueKey] || 0)).slice(0, 3000), [all, valueKey]);
   const max = useMemo(() => Math.max(1, ...pts.map((p) => p[valueKey] || 0)), [pts, valueKey]);
-  if (!pts.length) return <div className="text-mut text-sm p-6">No coordinates for the current filter.</div>;
+  if (!all.length) return <div className="text-mut text-sm p-6">No coordinates for the current filter.</div>;
   return (
     <div>
-      <MapContainer center={[-1.5, 102]} zoom={6} scrollWheelZoom style={{ height: 520, borderRadius: 8, border: "1px solid #E3E7ED" }}>
+      <MapContainer center={[-1.5, 102]} zoom={6} scrollWheelZoom preferCanvas style={{ height: 520, borderRadius: 8, border: "1px solid #E3E7ED" }}>
         <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <FitBounds pts={pts} />
         {pts.map((p, i) => {
@@ -39,7 +40,7 @@ export default function LeafletMap({ sites, onPick, valueKey = "power_dt_hours" 
         })}
       </MapContainer>
       <div className="flex items-center gap-4 text-[11px] text-mut mt-2 flex-wrap">
-        <span>{pts.length.toLocaleString()} sites plotted</span>
+        <span>{pts.length.toLocaleString()}{all.length > pts.length ? ` of ${all.length.toLocaleString()}` : ""} sites plotted (worst first)</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-crit inline-block" /> high</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-amber inline-block" /> medium</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate inline-block" /> low</span>
