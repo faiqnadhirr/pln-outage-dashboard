@@ -62,3 +62,6 @@ Deploys on Netlify too (build command `next build`).
   error). Not used by the engine (superseded by the event export), but worth fixing at source.
 - The config workbook's **January payload column** contained corrupt values (~10⁹ GB) for some
   sites; the engine drops any month value > 1,000,000 GB as implausible.
+
+## v3.1a fix — coordinates
+Map previously showed only South Sumatra. Root cause: the engine read the combined "Koordinat" column in New_BBT, which is only clean for REGIONAL2 and corrupt/empty for the north & central regions. Fixed to read the separate **Long / Lat** columns (100% filled, clean), with the combined column as fallback. Coordinates now cover all Sumatra: 18,583 sites (6,201 north incl. Aceh/Medan/Padang, 6,392 south).
