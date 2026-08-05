@@ -3,8 +3,8 @@ import React, { useEffect, useMemo, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import {
   fmtInt, fmtH, fmt1, ImpactBar, Tag, PatternTag, RepeatTag, TrendTag, PATTERN, REPEAT,
-  Kpi, DataTable, TopClustersBar, PatternMatrix, TimeSeries, GroupBars, GensetDonut,
-  RangeControl, Drawer, exportCsv,
+  Kpi, DataTable, TopClustersBar, PatternMatrix, TimeSeries, GroupBars,
+  RangeControl, Drawer, exportCsv, AvailBand, CauseMix, FaultSplit, DriverBars,
 } from "@/components/parts";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), { ssr: false, loading: () => <div className="text-mut text-sm p-6">Loading map…</div> });
@@ -12,12 +12,11 @@ const TABS = ["Overview", "Sites", "Clusters", "NOPs", "Worklist", "Map"];
 const slugOf = (c) => (c || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const CSV_COLS = [
   { key: "site_id", label: "Site ID" }, { key: "city", label: "City" }, { key: "cluster", label: "Cluster (TO)" }, { key: "nop", label: "NOP" },
-  { key: "region", label: "Region" }, { key: "class", label: "Class" }, { key: "n_outage", label: "PLN outages (H1)" },
-  { key: "n_ne_down", label: "NE down" }, { key: "power_dt_hours", label: "Power downtime H1 (h)" },
+  { key: "region", label: "Region" }, { key: "class", label: "Class" }, { key: "avail_pct", label: "Availability %" }, { key: "avail_gap", label: "Gap pp" },
+  { key: "n_outage", label: "PLN outages" }, { key: "n_ne_down", label: "NE down" }, { key: "power_dt_hours", label: "Power site-dark (h)" },
   { label: "Downtime in range (h)", get: (r) => r._rdt != null ? Math.round(r._rdt) : "" },
-  { label: "Backup", get: (r) => r.backup_insufficient === true ? "insufficient" : r.backup_insufficient === false ? "held" : "no data" },
-  { label: "Pattern", get: (r) => PATTERN[r.pattern]?.label }, { label: "Repeat", get: (r) => REPEAT[r.repeat]?.label },
-  { key: "trend", label: "Trend" }, { key: "lat", label: "Lat" }, { key: "lng", label: "Lng" },
+  { key: "fault", label: "Fault class" }, { label: "Pattern", get: (r) => PATTERN[r.pattern]?.label }, { label: "Repeat", get: (r) => REPEAT[r.repeat]?.label },
+  { key: "trend", label: "Trend" }, { key: "batt_age_yr", label: "Battery age" }, { key: "lat", label: "Lat" }, { key: "lng", label: "Lng" },
 ];
 
 export default function Page() {
@@ -26,8 +25,9 @@ export default function Page() {
   const [tab, setTab] = useState("Overview");
   const [sel, setSel] = useState(null);
   const [q, setQ] = useState("");
-  const [g, setG] = useState({ region: "", nop: "", cluster: "", city: "" });        // GLOBAL geo filter
-  const [f, setF] = useState({ pattern: "", repeat: "", backup: "", trend: "", minOut: "", minDt: "", badgrid: false }); // LOCAL (Sites)
+  const [g, setG] = useState({ region: "", nop: "", cluster: "", city: "" });
+  const [f, setF] = useState({ pattern: "", repeat: "", backup: "", trend: "", fault: "", minOut: "", minDt: "", badgrid: false });
+  const [evOnly, setEvOnly] = useState(true);
   const [thr, setThr] = useState(null);
   const [range, setRange] = useState({ s: 0, e: 0 });
   const [siteDaily, setSiteDaily] = useState({});
@@ -46,11 +46,9 @@ export default function Page() {
   const full = data ? (range.s === 0 && range.e === data.meta.dates.length - 1) : true;
   const sliceSum = useCallback((arr) => arr ? arr.slice(range.s, range.e + 1).reduce((a, b) => a + (b || 0), 0) : 0, [range]);
 
-  // cascading geo options
   const geoOpts = useMemo(() => {
     if (!data) return { regions: [], nops: [], clusters: [], cities: [] };
-    const S = data.sites;
-    const uniq = (arr, k) => [...new Set(arr.map((s) => s[k]).filter(Boolean))].sort();
+    const S = data.sites, uniq = (arr, k) => [...new Set(arr.map((s) => s[k]).filter(Boolean))].sort();
     const byR = g.region ? S.filter((s) => s.region === g.region) : S;
     const byN = g.nop ? byR.filter((s) => s.nop === g.nop) : byR;
     const byC = g.cluster ? byN.filter((s) => s.cluster === g.cluster) : byN;
@@ -74,43 +72,52 @@ export default function Page() {
   }, [full, data, neededClusters, loadedCl]);
 
   const rdt = useCallback((s) => full ? s.power_dt_hours : (siteDaily[s.site_id] ? Math.round(sliceSum(siteDaily[s.site_id]) * 10) / 10 : 0), [full, siteDaily, sliceSum]);
-
-  // geoSites decorated with range downtime
   const gSites = useMemo(() => geoSites.map((s) => ({ ...s, _rdt: rdt(s) })), [geoSites, rdt]);
 
-  // Sites tab = gSites + local filters + search
+  // main ranking universe: exclude likely-dead; optionally event-confirmed only
+  const rankSites = useMemo(() => gSites.filter((s) => !s.likely_dead && (!evOnly || s.in_events)), [gSites, evOnly]);
+  const worklist = useMemo(() => gSites.filter((s) => s.in_events === false || s.likely_dead), [gSites]);
+
   const sites = useMemo(() => {
     const t = q.trim().toLowerCase(); const T = thr ?? (data ? data.meta.bad_grid_threshold_h : 0);
-    return gSites.filter((s) => {
+    return rankSites.filter((s) => {
       const bad = s._rdt >= T && s._rdt > 0;
       return (!t || s.site_id.toLowerCase().includes(t)) &&
-        (!f.pattern || s.pattern === f.pattern) && (!f.repeat || s.repeat === f.repeat) && (!f.trend || s.trend === f.trend) &&
+        (!f.pattern || s.pattern === f.pattern) && (!f.repeat || s.repeat === f.repeat) && (!f.trend || s.trend === f.trend) && (!f.fault || s.fault === f.fault) &&
         (!f.backup || (f.backup === "insufficient" ? s.backup_insufficient === true : f.backup === "held" ? s.backup_insufficient === false : s.backup_insufficient == null)) &&
         (!f.minOut || s.n_outage >= +f.minOut) && (!f.minDt || s._rdt >= +f.minDt) && (!f.badgrid || bad);
     });
-  }, [gSites, q, f, thr, data]);
+  }, [rankSites, q, f, thr, data]);
 
-  // group rollups computed from gSites (range-aware) + merged trend/avg from precomputed
-  const metaLook = useMemo(() => {
-    if (!data) return { cluster: {}, nop: {} };
-    const mk = (arr, k) => Object.fromEntries(arr.map((o) => [o[k], o]));
-    return { cluster: mk(data.clusters, "cluster"), nop: mk(data.nops, "nop") };
-  }, [data]);
-  const groupRows = useCallback((level) => {
-    const T = thr ?? (data ? data.meta.bad_grid_threshold_h : 0);
-    const map = new Map();
-    gSites.forEach((s) => {
-      const k = s[level]; if (!k) return;
-      const d = map.get(k) || { [level]: k, nop: s.nop, region: s.region, n_sites: 0, n_outage: 0, n_ne_down: 0, power_dt_hours: 0, bad_grid_sites: 0, insuff_sites: 0 };
-      d.n_sites++; d.n_outage += s.n_outage; d.n_ne_down += s.n_ne_down; d.power_dt_hours += s._rdt;
-      d.bad_grid_sites += (s._rdt >= T && s._rdt > 0) ? 1 : 0; d.insuff_sites += s.backup_insufficient === true ? 1 : 0;
-      map.set(k, d);
+  // aggregates over geoSites (respect geo filter)
+  const agg = useMemo(() => {
+    const av = gSites.filter((s) => s.avail_pct != null);
+    const avail = av.length ? av.reduce((a, s) => a + s.avail_pct, 0) / av.length : null;
+    const target = av.length ? av.reduce((a, s) => a + s.target_pct, 0) / av.length : null;
+    const cause = { power: 0, transport: 0, ran: 0, other: 0 };
+    gSites.forEach((s) => { cause.power += s.cause_pow || 0; cause.transport += s.cause_tr || 0; cause.ran += s.cause_ran || 0; cause.other += s.cause_oth || 0; });
+    const ctot = cause.power + cause.transport + cause.ran + cause.other || 1;
+    const cause_pct = Object.fromEntries(Object.entries(cause).map(([k, v]) => [k, Math.round(1000 * v / ctot) / 10]));
+    const fault = { backup: 0, pln: 0, unverified: 0 };
+    gSites.forEach((s) => { fault[s.fault] = (fault[s.fault] || 0) + s.power_dt_hours; });
+    const ftot = fault.backup + fault.pln + fault.unverified || 1;
+    const fault_pct = Object.fromEntries(Object.entries(fault).map(([k, v]) => [k, Math.round(1000 * v / ftot) / 10]));
+    return { avail, target, gap: (avail != null && target != null) ? target - avail : null, cause_pct, fault, fault_pct };
+  }, [gSites]);
+
+  // backup-fail vs duration driver over geoSites
+  const drivers = useMemo(() => {
+    const ev = gSites.filter((s) => s.in_events && s.n_outage > 0);
+    const bk = [["<30m", 0, 1800], ["30-60m", 1800, 3600], ["1-2h", 3600, 7200], ["2-4h", 7200, 14400], [">4h", 14400, 9e18]];
+    return bk.map(([name, lo, hi]) => {
+      const grp = ev.filter((s) => { const d = s.backup_sec / Math.max(1, s.n_outage); return d >= lo && d < hi; });
+      const o = grp.reduce((a, s) => a + s.n_outage, 0), ne = grp.reduce((a, s) => a + s.n_ne_down, 0);
+      return { bucket: name, n: grp.length, fail_pct: o ? Math.round(1000 * ne / o) / 10 : 0 };
     });
-    return [...map.values()].map((d) => { const meta = metaLook[level][d[level]] || {}; return { ...d, power_dt_hours: Math.round(d.power_dt_hours), avg_outage_dur_min: meta.avg_outage_dur_min, trend: meta.trend || "stable", earlier_h: meta.earlier_h, recent_h: meta.recent_h, delta_pct: meta.delta_pct }; })
-      .sort((a, b) => b.power_dt_hours - a.power_dt_hours);
-  }, [gSites, thr, data, metaLook]);
-  const clustersG = useMemo(() => groupRows("cluster"), [groupRows]);
-  const nopsG = useMemo(() => groupRows("nop"), [groupRows]);
+  }, [gSites]);
+
+  const clustersG = useMemo(() => groupRows(rankSites, "cluster", data, rdt, thr, sliceSum, full), [rankSites, data, rdt, thr, sliceSum, full]);
+  const nopsG = useMemo(() => groupRows(rankSites, "nop", data, rdt, thr, sliceSum, full), [rankSites, data, rdt, thr, sliceSum, full]);
 
   const scopeSeries = useMemo(() => {
     if (!data) return null; const m = data.meta;
@@ -121,51 +128,41 @@ export default function Page() {
     return { name: "AREA1 (estate)", dt: m.estate_daily_dt, out: m.estate_daily_out };
   }, [data, g]);
 
-  if (err) return <Center>Could not load data: {err}. Run the engine to generate <code>public/data.json</code>.</Center>;
-  if (!data) return <Center><Spinner /> Loading AREA1 H1 dataset…</Center>;
+  if (err) return <Center>Could not load data: {err}.</Center>;
+  if (!data) return <Center><Spinner /> Loading AREA1 availability dataset…</Center>;
   const m = data.meta;
-  const siteMax = m.bad_grid_threshold_h * 3;
-  const dates = m.dates;
-  const estDt = Math.round(gSites.reduce((a, s) => a + (s._rdt || 0), 0));
-  const estOut = gSites.reduce((a, s) => a + s.n_outage, 0);
-  const estNe = gSites.reduce((a, s) => a + s.n_ne_down, 0);
-  const impacted = gSites.filter((s) => s._rdt > 0).length;
-  const chronic = gSites.filter((s) => s.repeat === "chronic").length;
-  const insuff = gSites.filter((s) => s.backup_insufficient === true).length;
-  const noData = gSites.filter((s) => s.in_events === false);
-  const worsening = clustersG.filter((c) => c.trend === "worsening").sort((a, b) => (b.delta_pct || 0) - (a.delta_pct || 0)).slice(0, 6);
+  const siteMax = m.bad_grid_threshold_h * 3, dates = m.dates;
+  const drill = (key, val) => { setG({ region: "", nop: "", cluster: "", city: "", [key]: val }); setTab("Sites"); };
+  const saveRegion = (rg) => { try { rg ? localStorage.setItem("myRegion", rg) : localStorage.removeItem("myRegion"); } catch {} };
   const rangeLabel = full ? "Full H1" : `${dates[range.s].slice(6, 8)}/${dates[range.s].slice(4, 6)} – ${dates[range.e].slice(6, 8)}/${dates[range.e].slice(4, 6)}`;
   const scopeLabel = g.city || g.cluster || g.nop || g.region || "AREA1";
-  const drill = (key, val) => { setG({ region: "", nop: "", cluster: "", city: "", [key]: val }); setTab("Sites"); };
-
-  // auto-insight
   const worstCluster = clustersG[0];
-  const insight = `${scopeLabel}: ${fmtInt(impacted)} sites impacted · ${fmtH(estDt)} power downtime${full ? "" : " in " + rangeLabel}. ` +
-    (worstCluster ? `Worst cluster ${worstCluster.cluster.replace(/^TO /, "")} (${fmtH(worstCluster.power_dt_hours)}). ` : "") +
-    `${fmtInt(chronic)} chronic sites, ${fmtInt(worsening.length)} clusters worsening, ${fmtInt(noData.length)} need verification.`;
+  const insight = `${scopeLabel}: availability ${agg.avail?.toFixed(2)}% vs target ${agg.target?.toFixed(2)}% (gap ${agg.gap > 0 ? "−" : "+"}${Math.abs(agg.gap || 0).toFixed(2)}pp). ` +
+    `Power = ${agg.cause_pct.power}% of downtime (the #1 cause). Of power downtime, ${agg.fault_pct.backup}% is backup-fault (CAPEX-addressable).`;
 
-  const dtCol = { key: "power_dt_hours", label: full ? "Power downtime" : "Downtime (range)", sortAccessor: (r) => r._rdt ?? r.power_dt_hours, render: (r) => <ImpactBar value={r._rdt ?? r.power_dt_hours} max={siteMax} /> };
+  const dtCol = { key: "power_dt_hours", label: full ? "Power site-dark" : "Site-dark (range)", sortAccessor: (r) => r._rdt ?? r.power_dt_hours, render: (r) => <ImpactBar value={r._rdt ?? r.power_dt_hours} max={siteMax} /> };
+  const FAULT = { backup: { l: "Backup", t: "crit" }, pln: { l: "PLN grid", t: "amber" }, unverified: { l: "Unverified", t: "mut" } };
   const siteCols = [
     { key: "rank", label: "#", sortable: false, render: (r, i) => <span className="text-mut tabular">{i + 1}</span> },
     { key: "site_id", label: "Site", render: (r) => <span className="font-semibold text-navy">{r.site_id}</span> },
     { key: "city", label: "City", render: (r) => <span className="text-slate">{r.city || "—"}</span> },
     { key: "cluster", label: "Cluster", render: (r) => <span className="text-slate">{(r.cluster || "—").replace(/^TO /, "")}</span> },
+    { key: "avail_pct", label: "Avail%", align: "right", render: (r) => r.avail_pct == null ? "—" : <span className={r.avail_gap > 0 ? "text-crit" : "text-navy"}>{r.avail_pct.toFixed(2)}</span> },
     { key: "n_outage", label: "Outages", align: "right", render: (r) => fmtInt(r.n_outage) },
     { key: "n_ne_down", label: "NE down", align: "right", render: (r) => <span className="text-crit">{fmtInt(r.n_ne_down)}</span> },
     dtCol,
-    { key: "pattern", label: "Pattern", sortAccessor: (r) => r.pattern, render: (r) => <PatternTag p={r.pattern} /> },
+    { key: "fault", label: "Fault", sortAccessor: (r) => r.fault, render: (r) => <Tag tone={FAULT[r.fault]?.t}>{FAULT[r.fault]?.l}</Tag> },
     { key: "repeat", label: "Repeat", sortAccessor: (r) => ({ chronic: 3, intermittent: 2, one_off: 1, none: 0 }[r.repeat]), render: (r) => <RepeatTag r={r.repeat} /> },
     { key: "trend", label: "Trend", sortAccessor: (r) => ({ worsening: 2, stable: 1, improving: 0 }[r.trend]), render: (r) => <TrendTag t={r.trend} /> },
   ];
   const grpCols = (level, rows) => [
     { key: level, label: level === "cluster" ? "Cluster (TO)" : "NOP", render: (r) => <span className="font-semibold text-navy">{(r[level] || "—").replace(/^(TO|NOP) /, "")}</span> },
-    { key: "nop", label: level === "cluster" ? "NOP" : "Region", render: (r) => <span className="text-slate">{level === "cluster" ? (r.nop || "—").replace(/^NOP /, "") : r.region}</span> },
+    { key: "avail_pct", label: "Avail%", align: "right", render: (r) => r.avail_pct == null ? "—" : <span className={r.avail_gap > 0 ? "text-crit" : "text-navy"}>{r.avail_pct.toFixed(2)}</span> },
     { key: "n_sites", label: "Sites", align: "right", render: (r) => fmtInt(r.n_sites) },
     { key: "n_outage", label: "Outages", align: "right", render: (r) => fmtInt(r.n_outage) },
-    { key: "avg_outage_dur_min", label: "Avg outage", align: "right", render: (r) => r.avg_outage_dur_min ? r.avg_outage_dur_min + "m" : "—" },
-    { key: "power_dt_hours", label: full ? "Power downtime" : "Downtime (range)", render: (r) => <ImpactBar value={r.power_dt_hours} max={rows[0]?.power_dt_hours || 1} /> },
+    { key: "power_dt_hours", label: full ? "Power site-dark" : "Site-dark (range)", render: (r) => <ImpactBar value={r.power_dt_hours} max={rows[0]?.power_dt_hours || 1} /> },
+    { key: "fault_backup_h", label: "Backup-fault", align: "right", render: (r) => <span className="text-crit">{fmtH(r.fault_backup_h)}</span> },
     { key: "trend", label: "Trend", sortAccessor: (r) => ({ worsening: 2, stable: 1, improving: 0 }[r.trend]), render: (r) => <TrendTag t={r.trend} /> },
-    { key: "bad_grid_sites", label: "Bad-grid", align: "right", render: (r) => <span className="text-crit">{fmtInt(r.bad_grid_sites)}</span> },
     { key: "insuff_sites", label: "Backup insuf.", align: "right", render: (r) => <span className="text-amber">{fmtInt(r.insuff_sites)}</span> },
     { key: "go", label: "", sortable: false, render: () => <span className="text-mut text-[12px]">sites →</span> },
   ];
@@ -175,31 +172,31 @@ export default function Page() {
       <header className="bg-navy text-white">
         <div className="max-w-[1360px] mx-auto px-4 sm:px-6 py-3 flex items-end justify-between flex-wrap gap-2">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.18em] text-amber font-semibold">Power Operations Intelligence</div>
-            <h1 className="text-xl sm:text-2xl font-bold leading-tight">PLN Outage — Top-Site Analysis</h1>
-            <div className="text-[12px] text-white/60">AREA1 · H1 2026 (Jan–Jun)</div>
+            <div className="text-[11px] uppercase tracking-[0.18em] text-amber font-semibold">Availability &amp; Power Intelligence</div>
+            <h1 className="text-xl sm:text-2xl font-bold leading-tight">Site Availability — Power Cause Analysis</h1>
+            <div className="text-[12px] text-white/60">AREA1 · H1 2026 (Jan–Jun) · customer POV (INAP)</div>
           </div>
           <div className="text-right text-[12px] text-white/70">
             <div className="inline-flex items-center gap-1.5 bg-white/10 rounded px-2 py-1"><span className="w-1.5 h-1.5 rounded-full bg-ok inline-block" /> Data as of {m.generated}</div>
-            <div className="text-white/50 mt-1">{fmtInt(m.n_sites)} sites · {fmtInt(m.total_outages)} outages</div>
+            <div className="text-white/50 mt-1">{fmtInt(m.n_sites)} sites · avail {m.avail_pct}%</div>
           </div>
         </div>
         <div className="max-w-[1360px] mx-auto px-4 sm:px-6 pb-2 space-y-1.5">
-          <GeoBar g={g} setG={setG} opts={geoOpts} />
+          <GeoBar g={g} setG={setG} opts={geoOpts} saveRegion={saveRegion} />
           <div className="bg-white/5 rounded-md px-3 py-2"><RangeControl dates={dates} range={range} setRange={setRange} /></div>
         </div>
         <nav className="max-w-[1360px] mx-auto px-4 sm:px-6 flex gap-1 overflow-x-auto">
           {TABS.map((t) => (
             <button key={t} onClick={() => setTab(t)}
               className={`px-3 sm:px-4 py-2 text-[13px] font-medium border-b-2 -mb-px whitespace-nowrap ${tab === t ? "border-amber text-white" : "border-transparent text-white/55 hover:text-white/85"}`}>
-              {t}{t === "Worklist" && <span className="ml-1 text-[10px] bg-amber/80 text-white rounded-full px-1.5">{fmtInt(noData.length)}</span>}
+              {t}{t === "Worklist" && <span className="ml-1 text-[10px] bg-amber/80 text-white rounded-full px-1.5">{fmtInt(worklist.length)}</span>}
             </button>
           ))}
         </nav>
       </header>
 
       {!full && <div className="bg-amber/10 border-b border-amber/30 text-[12px] text-navy px-4 sm:px-6 py-1.5">
-        Showing <b>{rangeLabel}</b> · scope <b>{scopeLabel}</b>. Downtime totals reflect this window; pattern/repeat/backup/trend describe full H1.{loadingDaily && <span className="ml-2 text-amber">· loading daily detail…</span>}</div>}
+        Showing <b>{rangeLabel}</b> · scope <b>{scopeLabel}</b>. Site-dark reflects this window; availability, cause, fault &amp; pattern describe full H1.{loadingDaily && <span className="ml-2 text-amber">· loading daily detail…</span>}</div>}
 
       <main className="max-w-[1360px] mx-auto px-4 sm:px-6 py-6 space-y-6">
         <div className="bg-card border border-line rounded-lg px-4 py-2.5 text-[13px] text-navy flex items-start gap-2">
@@ -208,97 +205,124 @@ export default function Page() {
 
         {tab === "Overview" && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Kpi label="Sites impacted" value={fmtInt(impacted)} sub={`of ${fmtInt(gSites.length)} in scope`} />
-              <Kpi label="PLN outages (H1)" value={fmtInt(estOut)} sub={`avg ${m.avg_outage_dur_min}m each`} tone="slate" />
-              <Kpi label="Network-down (H1)" value={fmtInt(estNe)} sub="backup failed" tone="crit" />
-              <Kpi label={full ? "Power downtime" : "Downtime (range)"} value={fmtH(estDt)} sub={full ? "wall-clock" : rangeLabel} tone="amber" />
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Kpi label="Chronic sites" value={fmtInt(chronic)} sub="bad ≥4 of 6 months" tone="crit" />
-              <Kpi label="Avg outages / site" value={fmt1(m.avg_outage_per_site)} sub="estate (H1)" tone="slate" />
-              <Kpi label="Backup insufficient" value={fmtInt(insuff)} sub="site went down" tone="amber" />
-              <Kpi label="Needs verification" value={fmtInt(noData.length)} sub="no event data" tone="slate" />
-            </div>
-
-            <Card title="Power downtime & PLN outages over time" note={`Scope: ${scopeSeries?.name} · grain below`}>
-              <TimeSeries dates={dates} dt={scopeSeries.dt} out={scopeSeries.out} />
+            <Card title="Availability vs target" note={`${scopeLabel} · INAP`}>
+              <AvailBand avail={agg.avail} target={agg.target} gap={agg.gap} />
             </Card>
 
             <div className="grid md:grid-cols-2 gap-6">
-              <Card title="Worst clusters by power downtime" note={`Top 10 · ${rangeLabel}`}><TopClustersBar data={clustersG} /></Card>
-              <Card title="Genset-adjusted outcome" note="Did backup hold when PLN fell?">
-                <GensetDonut held={estOut - estNe} down={estNe} />
-                <div className="mt-3 text-[11px] text-mut">Backup carried {estOut ? Math.round(((estOut - estNe) / estOut) * 100) : 0}% of PLN outages in scope.</div>
+              <Card title="What causes the availability gap?" note="Share of total downtime by cause">
+                <CauseMix cause_pct={agg.cause_pct} />
+                <div className="mt-3 text-[12px] text-slate"><b className="text-navy">Power is the #1 cause</b> at {agg.cause_pct.power}% — larger than transport and RAN combined. It is the highest-leverage lever to close the availability gap.</div>
+              </Card>
+              <Card title="Power downtime — whose fault?" note="Where CAPEX can actually help">
+                <FaultSplit fault={agg.fault} fault_pct={agg.fault_pct} />
+                <div className="mt-3 text-[12px] text-slate"><b className="text-navy">{agg.fault_pct.backup}%</b> is backup-fault → addressable by autonomy CAPEX. The PLN slice needs escalation, not CAPEX; unverified needs field checks.</div>
               </Card>
             </div>
 
-            <Card title="Site locations" note="OpenStreetMap · colour & size = downtime · click a site">
+            <Card title="Why backup fails: outage duration, not battery age" note="Fraction of PLN outages where the site went down">
+              <div className="grid md:grid-cols-2 gap-6 items-center">
+                <DriverBars duration_corr={drivers} />
+                <div className="text-[13px] text-slate space-y-2">
+                  <p><b className="text-navy">Backup failure scales with outage duration</b> — from ~13% for short dips to ~80% for multi-hour outages. Battery autonomy runs out; the site drops.</p>
+                  <p>Battery <b>age is flat</b> across the estate (~29% at every age) and Lithium vs VRLA is identical — so the fix is <b className="text-navy">not "replace old batteries."</b></p>
+                  <p>Genset roughly halves dark hours ({m.backup_drivers.genset_effect.with.avg_dark_h}h with vs {m.backup_drivers.genset_effect.without.avg_dark_h}h without). <b className="text-navy">CAPEX case = add autonomy (genset / larger battery) at sites facing long outages.</b></p>
+                </div>
+              </div>
+            </Card>
+
+            <Card title="Power site-dark over time" note={`Scope: ${scopeSeries?.name}`}>
+              <TimeSeries dates={dates} dt={scopeSeries.dt} out={scopeSeries.out} />
+            </Card>
+
+            <Card title="Site locations" note="OpenStreetMap · colour & size = power site-dark · click a site">
               <LeafletMap sites={gSites} onPick={setSel} />
             </Card>
 
             <div className="grid md:grid-cols-2 gap-6">
-              <Card title="Site problem patterns" note="Pattern × how-often · click a cell to filter"><PatternMatrix sites={gSites} onPick={(p, r) => { setF((x) => ({ ...x, pattern: p, repeat: r })); setTab("Sites"); }} /></Card>
-              <Card title="Clusters getting worse" note="Apr–Jun vs Jan–Mar · hover for why"><ChangeList rows={worsening} onPick={(c) => drill("cluster", c.cluster)} /></Card>
+              <Card title="Worst clusters (power site-dark)" note={`Top 10 · ${rangeLabel}`}><TopClustersBar data={clustersG} /></Card>
+              <Card title="Clusters getting worse" note="Apr–Jun vs Jan–Mar · hover for why"><ChangeList rows={clustersG.filter((c) => c.trend === "worsening").sort((a, b) => (b.delta_pct || 0) - (a.delta_pct || 0)).slice(0, 6)} onPick={(c) => drill("cluster", c.cluster)} /></Card>
             </div>
 
-            <Card title="Top 15 worst sites" note={`${scopeLabel} · ${rangeLabel}`}>
-              <DataTable columns={siteCols} rows={gSites} maxRows={15} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
+            <Card title="Top 15 worst sites" note={`Event-confirmed · dead sites excluded · ${rangeLabel}`}>
+              <DataTable columns={siteCols} rows={sites} maxRows={15} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
             </Card>
           </>
         )}
 
         {tab === "Sites" && (
           <>
-            <Filters {...{ f, setF, q, setQ, thr, setThr, m }} count={sites.length} total={gSites.length}
-              onClear={() => { setF({ pattern: "", repeat: "", backup: "", trend: "", minOut: "", minDt: "", badgrid: false }); setQ(""); }}
-              onExport={() => exportCsv(sites.slice(0, 5000), CSV_COLS, `pln_sites_${Date.now()}.csv`)} />
+            <Filters {...{ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly }} count={sites.length} total={rankSites.length}
+              onClear={() => { setF({ pattern: "", repeat: "", backup: "", trend: "", fault: "", minOut: "", minDt: "", badgrid: false }); setQ(""); }}
+              onExport={() => exportCsv(sites.slice(0, 5000), CSV_COLS, `sites_${Date.now()}.csv`)} />
             <div className="grid md:grid-cols-2 gap-6">
               <Card title="Pattern × repeat of selection"><PatternMatrix sites={sites} onPick={(p, r) => setF((x) => ({ ...x, pattern: p, repeat: r }))} /></Card>
-              <Card title="Top clusters in selection"><GroupBars rows={groupRows("cluster")} labelKey="cluster" n={10} onPick={(r) => r && setG((x) => ({ ...x, cluster: clustersG.find((c) => c.cluster.replace(/^TO /, "") === r.name)?.cluster || "" }))} /></Card>
+              <Card title="Top clusters in selection"><GroupBars rows={clustersG} labelKey="cluster" n={10} onPick={(r) => r && setG((x) => ({ ...x, cluster: clustersG.find((c) => c.cluster.replace(/^TO /, "") === r.name)?.cluster || "" }))} /></Card>
             </div>
             <DataTable columns={siteCols} rows={sites} maxRows={500} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
           </>
         )}
         {tab === "Clusters" && (
           <>
-            <Card title="Clusters (TO) by power downtime" note={`${scopeLabel} · ${rangeLabel}`}><GroupBars rows={clustersG} labelKey="cluster" n={14} onPick={(r) => r && drill("cluster", clustersG.find((c) => c.cluster.replace(/^TO /, "") === r.name)?.cluster || r.cluster)} /></Card>
+            <Card title="Clusters (TO) by power site-dark" note={`${scopeLabel} · ${rangeLabel}`}><GroupBars rows={clustersG} labelKey="cluster" n={14} onPick={(r) => r && drill("cluster", clustersG.find((c) => c.cluster.replace(/^TO /, "") === r.name)?.cluster || r.cluster)} /></Card>
             <Card title="All clusters" note="Click a row to drill into its sites"><DataTable columns={grpCols("cluster", clustersG)} rows={clustersG} maxRows={100} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={(r) => drill("cluster", r.cluster)} /></Card>
           </>
         )}
         {tab === "NOPs" && (
           <>
-            <Card title="NOPs by power downtime" note={`${scopeLabel} · ${rangeLabel}`}><GroupBars rows={nopsG} labelKey="nop" n={14} onPick={(r) => r && drill("nop", nopsG.find((c) => c.nop.replace(/^NOP /, "") === r.name)?.nop || r.nop)} /></Card>
+            <Card title="NOPs by power site-dark" note={`${scopeLabel} · ${rangeLabel}`}><GroupBars rows={nopsG} labelKey="nop" n={14} onPick={(r) => r && drill("nop", nopsG.find((c) => c.nop.replace(/^NOP /, "") === r.name)?.nop || r.nop)} /></Card>
             <Card title="All NOPs" note="Click a row to drill into its sites"><DataTable columns={grpCols("nop", nopsG)} rows={nopsG} maxRows={100} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={(r) => drill("nop", r.nop)} /></Card>
           </>
         )}
         {tab === "Worklist" && (
-          <Card title="Manual-check worklist" note={`${fmtInt(noData.length)} sites in scope with no event data`}>
+          <Card title="Verification worklist" note={`${fmtInt(worklist.length)} sites: no event data or likely-dead (excluded from ranking)`}>
             <div className="flex justify-between items-center mb-3 gap-3 flex-wrap">
-              <p className="text-[13px] text-slate max-w-2xl">Measured power downtime but no PLN-event records — backup behaviour unconfirmed. Field verification needed before any backup conclusion.</p>
-              <button onClick={() => exportCsv(noData, CSV_COLS, `pln_worklist_${Date.now()}.csv`)} className="shrink-0 bg-navy text-white text-[12px] rounded px-3 py-1.5 hover:bg-navy/90">Export CSV</button>
+              <p className="text-[13px] text-slate max-w-2xl">Sites with measured downtime but no PLN-event record, or that appear permanently dark (likely decommissioned/misconfigured). Field-verify before drawing any power conclusion.</p>
+              <button onClick={() => exportCsv(worklist, CSV_COLS, `worklist_${Date.now()}.csv`)} className="shrink-0 bg-navy text-white text-[12px] rounded px-3 py-1.5 hover:bg-navy/90">Export CSV</button>
             </div>
-            <DataTable columns={siteCols.filter((c) => !["pattern", "repeat"].includes(c.key))} rows={noData} maxRows={500} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
+            <DataTable columns={siteCols.filter((c) => !["repeat", "trend"].includes(c.key)).concat([{ key: "flag", label: "Flag", sortable: false, render: (r) => r.likely_dead ? <Tag tone="crit">likely dead</Tag> : <Tag tone="mut">no event</Tag> }])} rows={worklist} maxRows={500} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
           </Card>
         )}
         {tab === "Map" && (
-          <Card title="Bad-grid geography" note="OpenStreetMap · colour & size = power downtime · click a site">
+          <Card title="Power site-dark geography" note="OpenStreetMap · colour & size = site-dark · click a site">
             <LeafletMap sites={gSites} onPick={setSel} />
           </Card>
         )}
       </main>
 
       <footer className="max-w-[1360px] mx-auto px-4 sm:px-6 py-6 text-[11px] text-mut">
-        Impact = power-attributable network downtime (wall-clock, capped 24h/day), genset-adjusted. In a custom period, downtime reflects the window; pattern/repeat/backup/trend describe full H1. “Backup insufficient” = site went down despite backup; “no data” = absent from the event feed. Estate-level analysis. Data as of {m.generated}.
+        KPI = site availability (INAP). Power site-dark = Σ(1−ava_power)×24h per day (site-level, honest — NE-summed hours shown only as severity in the drawer). Cause shares from duration_power/transport/ran/other. “Fault: backup” = went down despite backup (CAPEX-addressable); “PLN” = grid issue, backup held (escalate); “unverified” = no event record. Ranking excludes likely-dead sites and (by default) unverified. Trend compares Apr–Jun vs Jan–Mar. Data as of {m.generated}.
       </footer>
       <Drawer site={sel} months={m.months} onClose={() => setSel(null)} />
     </div>
   );
 }
 
-function GeoBar({ g, setG, opts }) {
-  const Sel = ({ k, label, list, reset }) => (
-    <select value={g[k]} onChange={(e) => setG((x) => ({ ...x, [k]: e.target.value, ...reset }))}
+function groupRows(sites, level, data, rdt, thr, sliceSum, full) {
+  if (!data) return [];
+  const T = thr ?? data.meta.bad_grid_threshold_h;
+  const metaLook = Object.fromEntries((level === "cluster" ? data.clusters : data.nops).map((o) => [o[level], o]));
+  const map = new Map();
+  sites.forEach((s) => {
+    const k = s[level]; if (!k) return;
+    const d = map.get(k) || { [level]: k, nop: s.nop, region: s.region, n_sites: 0, n_outage: 0, n_ne_down: 0, power_dt_hours: 0, bad_grid_sites: 0, insuff_sites: 0, fault_backup_h: 0, av_sum: 0, tg_sum: 0, ac: 0 };
+    d.n_sites++; d.n_outage += s.n_outage; d.n_ne_down += s.n_ne_down; d.power_dt_hours += s._rdt;
+    d.bad_grid_sites += (s._rdt >= T && s._rdt > 0) ? 1 : 0; d.insuff_sites += s.backup_insufficient === true ? 1 : 0;
+    d.fault_backup_h += s.fault === "backup" ? s._rdt : 0;
+    if (s.avail_pct != null) { d.av_sum += s.avail_pct; d.tg_sum += s.target_pct; d.ac++; }
+    map.set(k, d);
+  });
+  return [...map.values()].map((d) => {
+    const meta = metaLook[d[level]] || {};
+    return { ...d, power_dt_hours: Math.round(d.power_dt_hours), fault_backup_h: Math.round(d.fault_backup_h),
+      avail_pct: d.ac ? d.av_sum / d.ac : null, avail_gap: d.ac ? (d.tg_sum - d.av_sum) / d.ac : null,
+      trend: meta.trend || "stable", earlier_h: meta.earlier_h, recent_h: meta.recent_h, delta_pct: meta.delta_pct };
+  }).sort((a, b) => b.power_dt_hours - a.power_dt_hours);
+}
+
+function GeoBar({ g, setG, opts, saveRegion }) {
+  const Sel = ({ k, label, list, reset, onChange }) => (
+    <select value={g[k]} onChange={(e) => { setG((x) => ({ ...x, [k]: e.target.value, ...reset })); onChange && onChange(e.target.value); }}
       className="bg-white/10 text-white border border-white/20 rounded px-2 py-1 text-[12px]">
       <option value="" className="text-navy">{label}</option>
       {list.map((o) => <option key={o} value={o} className="text-navy">{o.replace(/^(TO|NOP) /, "")}</option>)}
@@ -308,9 +332,8 @@ function GeoBar({ g, setG, opts }) {
   return (
     <div className="flex flex-wrap items-center gap-2 text-white">
       <span className="text-[10px] uppercase tracking-wide text-white/50 font-semibold">Area</span>
-      <span className="bg-white/10 rounded px-2 py-1 text-[12px]">AREA1</span>
-      <span className="text-white/30">›</span>
-      <Sel k="region" label="All regions" list={opts.regions} reset={{ nop: "", cluster: "", city: "" }} />
+      <span className="bg-white/10 rounded px-2 py-1 text-[12px]">AREA1</span><span className="text-white/30">›</span>
+      <Sel k="region" label="All regions" list={opts.regions} reset={{ nop: "", cluster: "", city: "" }} onChange={saveRegion} />
       <Sel k="nop" label="All NOPs" list={opts.nops} reset={{ cluster: "", city: "" }} />
       <Sel k="cluster" label="All clusters" list={opts.clusters} reset={{ city: "" }} />
       <Sel k="city" label="All cities" list={opts.cities} reset={{}} />
@@ -318,7 +341,7 @@ function GeoBar({ g, setG, opts }) {
     </div>
   );
 }
-function Filters({ f, setF, q, setQ, thr, setThr, m, count, total, onClear, onExport }) {
+function Filters({ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly, count, total, onClear, onExport }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const Sel = ({ k, label, opts }) => (
     <select value={f[k]} onChange={(e) => set(k, e.target.value)} className="border border-line rounded-md px-2 py-1.5 text-[12px] bg-card text-navy">
@@ -329,14 +352,13 @@ function Filters({ f, setF, q, setQ, thr, setThr, m, count, total, onClear, onEx
     <div className="bg-card border border-line rounded-lg px-3 py-2.5 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search Site ID…" className="border border-line rounded-md px-2.5 py-1.5 text-[12px] w-36" />
+        <Sel k="fault" label="Any fault" opts={[{ v: "backup", l: "Backup (CAPEX)" }, { v: "pln", l: "PLN grid" }, { v: "unverified", l: "Unverified" }]} />
         <Sel k="pattern" label="Any pattern" opts={Object.keys(PATTERN).map((k) => ({ v: k, l: PATTERN[k].label }))} />
         <Sel k="repeat" label="Any repeat" opts={[{ v: "chronic", l: "Chronic" }, { v: "intermittent", l: "Intermittent" }, { v: "one_off", l: "One-off" }]} />
-        <Sel k="backup" label="Any backup" opts={[{ v: "insufficient", l: "Insufficient" }, { v: "held", l: "Held" }, { v: "nodata", l: "No data" }]} />
         <Sel k="trend" label="Any trend" opts={[{ v: "worsening", l: "Worsening" }, { v: "improving", l: "Improving" }, { v: "stable", l: "Stable" }]} />
         <span className="text-mut">Min out</span><input type="number" value={f.minOut} onChange={(e) => set("minOut", e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" placeholder="0" />
         <span className="text-mut">Min dt(h)</span><input type="number" value={f.minDt} onChange={(e) => set("minDt", e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" placeholder="0" />
-        <label className="flex items-center gap-1.5 text-slate cursor-pointer text-[12px]"><input type="checkbox" checked={f.badgrid} onChange={(e) => set("badgrid", e.target.checked)} className="accent-amber" />Bad-grid ≥</label>
-        <input type="number" value={thr ?? ""} onChange={(e) => setThr(e.target.value === "" ? m.bad_grid_threshold_h : +e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" /><span className="text-mut text-[12px]">h</span>
+        <label className="flex items-center gap-1.5 text-slate cursor-pointer text-[12px]"><input type="checkbox" checked={evOnly} onChange={(e) => setEvOnly(e.target.checked)} className="accent-amber" />Event-confirmed only</label>
         <div className="ml-auto flex items-center gap-3 text-[12px]">
           <span className="text-mut"><span className="tabular font-semibold text-navy">{fmtInt(count)}</span> / {fmtInt(total)}</span>
           <button onClick={onExport} className="bg-navy text-white rounded px-3 py-1.5 hover:bg-navy/90">Export CSV</button>
@@ -351,8 +373,7 @@ function ChangeList({ rows, onPick }) {
   return (
     <div className="divide-y divide-line">
       {rows.map((c) => (
-        <div key={c.cluster} onClick={() => onPick(c)}
-          title={`${c.cluster}: Jan–Mar ${fmtInt(c.earlier_h)}h → Apr–Jun ${fmtInt(c.recent_h)}h (${c.delta_pct > 0 ? "+" : ""}${c.delta_pct}%). ${fmtInt(c.bad_grid_sites)} bad-grid sites.`}
+        <div key={c.cluster} onClick={() => onPick(c)} title={`${c.cluster}: Jan–Mar ${fmtInt(c.earlier_h)}h → Apr–Jun ${fmtInt(c.recent_h)}h (${c.delta_pct > 0 ? "+" : ""}${c.delta_pct}%).`}
           className="flex items-center justify-between py-2 cursor-pointer hover:bg-surface px-1 rounded">
           <div><div className="font-medium text-navy text-[13px]">{c.cluster.replace(/^TO /, "")}</div>
             <div className="text-[11px] text-mut">{c.nop?.replace(/^NOP /, "")} · {fmtInt(c.n_sites)} sites · {fmtInt(c.earlier_h)}→{fmtInt(c.recent_h)}h</div></div>

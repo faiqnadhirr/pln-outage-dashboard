@@ -268,15 +268,23 @@ export function Drawer({ site, months, onClose }) {
             <PatternTag p={site.pattern} /><RepeatTag r={site.repeat} /><TrendTag t={site.trend} />
           </div>
           {pat && <div className="bg-surface border border-line rounded-md p-3 text-[12px]"><b className="text-navy">Suggested direction:</b> <span className="text-slate">{pat.action}</span></div>}
+          <section>
+            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Availability</h4>
+            <Row k="Availability (INAP)" v={site.avail_pct == null ? "—" : site.avail_pct + "%"} />
+            <Row k="Target" v={site.target_pct == null ? "—" : site.target_pct + "%"} />
+            <Row k="Gap" v={site.avail_gap == null ? "—" : (site.avail_gap > 0 ? "−" : "+") + Math.abs(site.avail_gap).toFixed(2) + "pp"} />
+            <Row k="Power share of downtime" v={site.power_share_pct == null ? "—" : site.power_share_pct + "%"} />
+            <Row k="Fault class" v={site.fault === "backup" ? "Backup insufficient (CAPEX)" : site.fault === "pln" ? "PLN grid (escalate)" : "Unverified"} />
+          </section>
           <div>
-            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Monthly power downtime (h)</h4>
+            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Monthly power site-dark (h)</h4>
             <Sparkline m={site.m} months={months} />
           </div>
           <section>
             <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">v1 · outage &amp; impact</h4>
             <Row k="PLN outages (H1)" v={fmtInt(site.n_outage)} /><Row k="Led to network down" v={fmtInt(site.n_ne_down)} />
-            <Row k="Backup held (only mains fail)" v={fmtInt(site.n_only_mains)} /><Row k="Power downtime (wall-clock)" v={fmtH(site.power_dt_hours)} />
-            <Row k="Power downtime (NE-hours)" v={fmtH(site.power_ne_hours)} /><Row k="Days with power incident" v={fmtInt(site.power_days)} />
+            <Row k="Backup held (only mains fail)" v={fmtInt(site.n_only_mains)} /><Row k="Power site-dark (wall-clock)" v={fmtH(site.power_dt_hours)} />
+            <Row k="Power NE-hours (severity, ×sectors)" v={fmtH(site.power_ne_hours)} /><Row k="Days with power incident" v={fmtInt(site.power_days)} />
             <Row k="Min power availability" v={site.min_ava_power == null ? "—" : site.min_ava_power + "%"} />
           </section>
           <section>
@@ -406,5 +414,90 @@ export function GensetDonut({ held, down }) {
         {seg.map((s) => <div key={s.l} className="flex items-center gap-2 text-[13px]"><span className="w-3 h-3 rounded-sm" style={{ background: s.c }} /><span className="tabular font-medium text-navy">{fmtInt(s.v)}</span><span className="text-mut">{s.l}</span></div>)}
       </div>
     </div>
+  );
+}
+
+/* ---------- v4: availability band ---------- */
+export function AvailBand({ avail, target, gap }) {
+  const pct = (v) => `${v?.toFixed(2)}%`;
+  const bad = gap > 0;
+  return (
+    <div className="flex items-end gap-6 flex-wrap">
+      <div><div className="text-[11px] uppercase tracking-wide text-mut font-semibold">Availability (INAP)</div>
+        <div className="text-[34px] leading-none font-bold text-navy tabular">{pct(avail)}</div></div>
+      <div className="pb-1"><div className="text-[11px] uppercase tracking-wide text-mut font-semibold">Target</div>
+        <div className="text-[20px] font-semibold text-slate tabular">{pct(target)}</div></div>
+      <div className="pb-1"><div className="text-[11px] uppercase tracking-wide text-mut font-semibold">Gap</div>
+        <div className={`text-[20px] font-bold tabular ${bad ? "text-crit" : "text-ok"}`}>{bad ? "−" : "+"}{Math.abs(gap).toFixed(2)}pp</div></div>
+      <div className="flex-1 min-w-[180px] pb-1">
+        <div className="h-3 rounded-full bg-line overflow-hidden relative">
+          <div className="h-full bg-navy rounded-full" style={{ width: `${Math.min(100, (avail / target) * 100)}%` }} />
+          <div className="absolute top-0 h-full w-0.5 bg-crit" style={{ left: "100%" }} />
+        </div>
+        <div className="text-[10px] text-mut mt-1">bar = actual · red line = target</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- v4: cause mix (power dominant proof) ---------- */
+export function CauseMix({ cause_pct }) {
+  const items = [
+    { k: "power", l: "Power", c: "#B23A2E" }, { k: "other", l: "Other", c: "#7A8598" },
+    { k: "transport", l: "Transport", c: "#C8862B" }, { k: "ran", l: "RAN / hardware", c: "#3E4C63" },
+  ].map((i) => ({ ...i, v: cause_pct[i.k] || 0 })).sort((a, b) => b.v - a.v);
+  return (
+    <div>
+      <div className="flex h-8 rounded-md overflow-hidden mb-3">
+        {items.map((i) => <div key={i.k} style={{ width: i.v + "%", background: i.c }} title={`${i.l} ${i.v}%`} />)}
+      </div>
+      <div className="space-y-1.5">
+        {items.map((i) => (
+          <div key={i.k} className="flex items-center gap-2 text-[13px]">
+            <span className="w-3 h-3 rounded-sm" style={{ background: i.c }} />
+            <span className="text-slate flex-1">{i.l}</span>
+            <span className="tabular font-semibold text-navy">{i.v}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- v4: fault split (CAPEX addressable) ---------- */
+export function FaultSplit({ fault, fault_pct }) {
+  const seg = [
+    { k: "backup", l: "Backup insufficient", tag: "CAPEX-addressable", c: "#B23A2E" },
+    { k: "pln", l: "PLN grid (backup held)", tag: "Escalate to PLN", c: "#C8862B" },
+    { k: "unverified", l: "Unverified", tag: "Field-check first", c: "#7A8598" },
+  ];
+  return (
+    <div className="space-y-2.5">
+      {seg.map((s) => (
+        <div key={s.k}>
+          <div className="flex justify-between items-baseline text-[13px] mb-0.5">
+            <span className="text-navy font-medium">{s.l} <span className="text-[11px] text-mut">· {s.tag}</span></span>
+            <span className="tabular text-navy">{fmtH(fault[s.k])} <span className="text-mut">({fault_pct[s.k]}%)</span></span>
+          </div>
+          <div className="h-2.5 rounded-full bg-line overflow-hidden"><div className="h-full rounded-full" style={{ width: (fault_pct[s.k] || 0) + "%", background: s.c }} /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- v4: backup-fail vs outage-duration driver ---------- */
+export function DriverBars({ duration_corr }) {
+  const d = duration_corr.filter((b) => b.n > 0).map((b) => ({ name: b.bucket, fail: b.fail_pct, n: b.n }));
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={d} margin={{ left: 4, right: 8, top: 8, bottom: 4 }}>
+        <CartesianGrid strokeDasharray="2 3" stroke="#EEF2F7" vertical={false} />
+        <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#141821" }} />
+        <YAxis tick={{ fontSize: 10, fill: "#7A8598" }} tickFormatter={(v) => v + "%"} domain={[0, 100]} width={36} />
+        <Tooltip formatter={(v, k) => k === "fail" ? [v + "%", "Backup failed"] : [fmtInt(v), "sites"]} />
+        <Bar dataKey="fail" radius={[3, 3, 0, 0]}>{d.map((e, i) => <Cell key={i} fill={e.fail > 60 ? "#B23A2E" : e.fail > 30 ? "#C8862B" : "#3E4C63"} />)}</Bar>
+      </BarChart>
+    </ResponsiveContainer>
   );
 }
