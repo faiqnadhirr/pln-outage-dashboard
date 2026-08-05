@@ -65,3 +65,12 @@ Deploys on Netlify too (build command `next build`).
 
 ## v3.1a fix — coordinates
 Map previously showed only South Sumatra. Root cause: the engine read the combined "Koordinat" column in New_BBT, which is only clean for REGIONAL2 and corrupt/empty for the north & central regions. Fixed to read the separate **Long / Lat** columns (100% filled, clean), with the combined column as fallback. Coordinates now cover all Sumatra: 18,583 sites (6,201 north incl. Aceh/Medan/Padang, 6,392 south).
+
+## v5 — DURATION-based BBT (corrected Jan–Jun monthly)
+The event/backup side now uses the corrected monthly "BBT Site Details" files (Jan–Jun), replacing the old per-event export (which had string timestamps / suspected Jan–Mar duplication). This side is now duration-based, matching the availability philosophy.
+- "PLN outages (count)" → **PLN-down duration (h)**; "NE down (count)" → **NE-dark duration (h)**; backup as **backup run-time (h)**.
+- Fault split refreshed: backup 62.1% (CAPEX) / PLN 18.5% (escalate) / unverified 19.4% (BBT coverage up to 15,933 sites → fewer unverified).
+- Driver rebuilt from site-months: backup failure vs PLN-down exposure — 19%→23%→31%→73% (monotonic). Battery age still flat; genset still halves dark hours.
+- Drawer shows a **Monthly BBT (hours)** table (PLN-down / NE-dark / backup per month) instead of a per-event list (the new source has no per-event timestamps).
+- Availability, cause attribution (power 53.8%), and site-dark are unchanged — they come from the separate availability feed.
+- Note: availability feed is Jan–Jun; BBT side is Jan–Jun (June added).

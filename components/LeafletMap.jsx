@@ -18,8 +18,9 @@ export default function LeafletMap({ sites, onPick, valueKey = "power_dt_hours" 
     () => sites.filter((s) => s.lat && s.lng && s.lat > -12 && s.lat < 8 && s.lng > 90 && s.lng < 120),
     [sites]
   );
-  const pts = useMemo(() => [...all].sort((a, b) => (b[valueKey] || 0) - (a[valueKey] || 0)).slice(0, 3000), [all, valueKey]);
-  const max = useMemo(() => Math.max(1, ...pts.map((p) => p[valueKey] || 0)), [pts, valueKey]);
+  const pts = useMemo(() => [...all].sort((a, b) => ((b._rdt!=null?b._rdt:b[valueKey])||0) - ((a._rdt!=null?a._rdt:a[valueKey])||0)).slice(0, 3000), [all, valueKey]);
+  const val = (p) => (p._rdt != null ? p._rdt : (p[valueKey] || 0));
+  const max = useMemo(() => Math.max(1, ...pts.map(val)), [pts, valueKey]);
   if (!all.length) return <div className="text-mut text-sm p-6">No coordinates for the current filter.</div>;
   return (
     <div>
@@ -27,7 +28,7 @@ export default function LeafletMap({ sites, onPick, valueKey = "power_dt_hours" 
         <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <FitBounds pts={pts} />
         {pts.map((p, i) => {
-          const v = p[valueKey] || 0, ratio = v / max;
+          const v = val(p), ratio = v / max;
           const color = ratio > 0.66 ? "#B23A2E" : ratio > 0.33 ? "#C8862B" : "#3E4C63";
           const r = 3 + Math.sqrt(ratio) * 9;
           return (

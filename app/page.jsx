@@ -6,6 +6,7 @@ import {
   Kpi, DataTable, TopClustersBar, PatternMatrix, TimeSeries, GroupBars,
   RangeControl, Drawer, exportCsv, AvailBand, CauseMix, FaultSplit, DriverBars,
 } from "@/components/parts";
+import { HelpButton, LangToggle, InfoTip } from "@/components/help";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), { ssr: false, loading: () => <div className="text-mut text-sm p-6">Loading map…</div> });
 const TABS = ["Overview", "Sites", "Clusters", "NOPs", "Worklist", "Map"];
@@ -13,7 +14,7 @@ const slugOf = (c) => (c || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replac
 const CSV_COLS = [
   { key: "site_id", label: "Site ID" }, { key: "city", label: "City" }, { key: "cluster", label: "Cluster (TO)" }, { key: "nop", label: "NOP" },
   { key: "region", label: "Region" }, { key: "class", label: "Class" }, { key: "avail_pct", label: "Availability %" }, { key: "avail_gap", label: "Gap pp" },
-  { key: "n_outage", label: "PLN outages" }, { key: "n_ne_down", label: "NE down" }, { key: "power_dt_hours", label: "Power site-dark (h)" },
+  { key: "pln_down_h", label: "PLN-down (h)" }, { key: "ne_dark_h", label: "NE-dark (h)" }, { key: "power_dt_hours", label: "Power site-dark (h)" },
   { label: "Downtime in range (h)", get: (r) => r._rdt != null ? Math.round(r._rdt) : "" },
   { key: "fault", label: "Fault class" }, { label: "Pattern", get: (r) => PATTERN[r.pattern]?.label }, { label: "Repeat", get: (r) => REPEAT[r.repeat]?.label },
   { key: "trend", label: "Trend" }, { key: "batt_age_yr", label: "Battery age" }, { key: "lat", label: "Lat" }, { key: "lng", label: "Lng" },
@@ -28,6 +29,7 @@ export default function Page() {
   const [g, setG] = useState({ region: "", nop: "", cluster: "", city: "" });
   const [f, setF] = useState({ pattern: "", repeat: "", backup: "", trend: "", fault: "", minOut: "", minDt: "", badgrid: false });
   const [evOnly, setEvOnly] = useState(true);
+  const [lang, setLang] = useState("en");
   const [thr, setThr] = useState(null);
   const [range, setRange] = useState({ s: 0, e: 0 });
   const [siteDaily, setSiteDaily] = useState({});
@@ -39,7 +41,7 @@ export default function Page() {
       .then((d) => {
         d.sites.forEach((s, i) => (s.__id = s.site_id + i));
         setData(d); setThr(d.meta.bad_grid_threshold_h); setRange({ s: 0, e: d.meta.dates.length - 1 });
-        try { const rg = localStorage.getItem("myRegion"); if (rg) setG((x) => ({ ...x, region: rg })); } catch {}
+        try { const rg = localStorage.getItem("myRegion"); if (rg) setG((x) => ({ ...x, region: rg })); const lg = localStorage.getItem("lang"); if (lg) setLang(lg); } catch {}
       }).catch((e) => setErr(e.message));
   }, []);
 
@@ -85,7 +87,7 @@ export default function Page() {
       return (!t || s.site_id.toLowerCase().includes(t)) &&
         (!f.pattern || s.pattern === f.pattern) && (!f.repeat || s.repeat === f.repeat) && (!f.trend || s.trend === f.trend) && (!f.fault || s.fault === f.fault) &&
         (!f.backup || (f.backup === "insufficient" ? s.backup_insufficient === true : f.backup === "held" ? s.backup_insufficient === false : s.backup_insufficient == null)) &&
-        (!f.minOut || s.n_outage >= +f.minOut) && (!f.minDt || s._rdt >= +f.minDt) && (!f.badgrid || bad);
+        (!f.minOut || s.pln_down_h >= +f.minOut) && (!f.minDt || s._rdt >= +f.minDt) && (!f.badgrid || bad);
     });
   }, [rankSites, q, f, thr, data]);
 
@@ -105,19 +107,11 @@ export default function Page() {
     return { avail, target, gap: (avail != null && target != null) ? target - avail : null, cause_pct, fault, fault_pct };
   }, [gSites]);
 
-  // backup-fail vs duration driver over geoSites
-  const drivers = useMemo(() => {
-    const ev = gSites.filter((s) => s.in_events && s.n_outage > 0);
-    const bk = [["<30m", 0, 1800], ["30-60m", 1800, 3600], ["1-2h", 3600, 7200], ["2-4h", 7200, 14400], [">4h", 14400, 9e18]];
-    return bk.map(([name, lo, hi]) => {
-      const grp = ev.filter((s) => { const d = s.backup_sec / Math.max(1, s.n_outage); return d >= lo && d < hi; });
-      const o = grp.reduce((a, s) => a + s.n_outage, 0), ne = grp.reduce((a, s) => a + s.n_ne_down, 0);
-      return { bucket: name, n: grp.length, fail_pct: o ? Math.round(1000 * ne / o) / 10 : 0 };
-    });
-  }, [gSites]);
+  // backup-fail vs PLN-down-duration driver (estate-level, site-month based — from engine)
+  const drivers = data ? data.meta.backup_drivers.duration_corr : [];
 
-  const clustersG = useMemo(() => groupRows(rankSites, "cluster", data, rdt, thr, sliceSum, full), [rankSites, data, rdt, thr, sliceSum, full]);
-  const nopsG = useMemo(() => groupRows(rankSites, "nop", data, rdt, thr, sliceSum, full), [rankSites, data, rdt, thr, sliceSum, full]);
+  const clustersG = useMemo(() => groupRows(gSites, "cluster", data, rdt, thr, sliceSum, full), [gSites, data, rdt, thr, sliceSum, full]);
+  const nopsG = useMemo(() => groupRows(gSites, "nop", data, rdt, thr, sliceSum, full), [gSites, data, rdt, thr, sliceSum, full]);
 
   const scopeSeries = useMemo(() => {
     if (!data) return null; const m = data.meta;
@@ -134,10 +128,11 @@ export default function Page() {
   const siteMax = m.bad_grid_threshold_h * 3, dates = m.dates;
   const drill = (key, val) => { setG({ region: "", nop: "", cluster: "", city: "", [key]: val }); setTab("Sites"); };
   const saveRegion = (rg) => { try { rg ? localStorage.setItem("myRegion", rg) : localStorage.removeItem("myRegion"); } catch {} };
+  const changeLang = (l) => { setLang(l); try { localStorage.setItem("lang", l); } catch {} };
   const rangeLabel = full ? "Full H1" : `${dates[range.s].slice(6, 8)}/${dates[range.s].slice(4, 6)} – ${dates[range.e].slice(6, 8)}/${dates[range.e].slice(4, 6)}`;
   const scopeLabel = g.city || g.cluster || g.nop || g.region || "AREA1";
   const worstCluster = clustersG[0];
-  const insight = `${scopeLabel}: availability ${agg.avail?.toFixed(2)}% vs target ${agg.target?.toFixed(2)}% (gap ${agg.gap > 0 ? "−" : "+"}${Math.abs(agg.gap || 0).toFixed(2)}pp). ` +
+  const insight = `${scopeLabel}: availability ${agg.avail!=null?agg.avail.toFixed(2):"—"}% vs target ${agg.target!=null?agg.target.toFixed(2):"—"}% (gap ${agg.gap>0?"−":"+"}${Math.abs(agg.gap||0).toFixed(2)}pp). ` +
     `Power = ${agg.cause_pct.power}% of downtime (the #1 cause). Of power downtime, ${agg.fault_pct.backup}% is backup-fault (CAPEX-addressable).`;
 
   const dtCol = { key: "power_dt_hours", label: full ? "Power site-dark" : "Site-dark (range)", sortAccessor: (r) => r._rdt ?? r.power_dt_hours, render: (r) => <ImpactBar value={r._rdt ?? r.power_dt_hours} max={siteMax} /> };
@@ -148,8 +143,8 @@ export default function Page() {
     { key: "city", label: "City", render: (r) => <span className="text-slate">{r.city || "—"}</span> },
     { key: "cluster", label: "Cluster", render: (r) => <span className="text-slate">{(r.cluster || "—").replace(/^TO /, "")}</span> },
     { key: "avail_pct", label: "Avail%", align: "right", render: (r) => r.avail_pct == null ? "—" : <span className={r.avail_gap > 0 ? "text-crit" : "text-navy"}>{r.avail_pct.toFixed(2)}</span> },
-    { key: "n_outage", label: "Outages", align: "right", render: (r) => fmtInt(r.n_outage) },
-    { key: "n_ne_down", label: "NE down", align: "right", render: (r) => <span className="text-crit">{fmtInt(r.n_ne_down)}</span> },
+    { key: "pln_down_h", label: "PLN-down", align: "right", sortAccessor: (r) => r.pln_down_h, render: (r) => fmtH(r.pln_down_h) },
+    { key: "ne_dark_h", label: "NE-dark", align: "right", sortAccessor: (r) => r.ne_dark_h, render: (r) => <span className="text-crit">{fmtH(r.ne_dark_h)}</span> },
     dtCol,
     { key: "fault", label: "Fault", sortAccessor: (r) => r.fault, render: (r) => <Tag tone={FAULT[r.fault]?.t}>{FAULT[r.fault]?.l}</Tag> },
     { key: "repeat", label: "Repeat", sortAccessor: (r) => ({ chronic: 3, intermittent: 2, one_off: 1, none: 0 }[r.repeat]), render: (r) => <RepeatTag r={r.repeat} /> },
@@ -159,7 +154,7 @@ export default function Page() {
     { key: level, label: level === "cluster" ? "Cluster (TO)" : "NOP", render: (r) => <span className="font-semibold text-navy">{(r[level] || "—").replace(/^(TO|NOP) /, "")}</span> },
     { key: "avail_pct", label: "Avail%", align: "right", render: (r) => r.avail_pct == null ? "—" : <span className={r.avail_gap > 0 ? "text-crit" : "text-navy"}>{r.avail_pct.toFixed(2)}</span> },
     { key: "n_sites", label: "Sites", align: "right", render: (r) => fmtInt(r.n_sites) },
-    { key: "n_outage", label: "Outages", align: "right", render: (r) => fmtInt(r.n_outage) },
+    { key: "pln_down_h", label: "PLN-down", align: "right", render: (r) => fmtH(r.pln_down_h) },
     { key: "power_dt_hours", label: full ? "Power site-dark" : "Site-dark (range)", render: (r) => <ImpactBar value={r.power_dt_hours} max={rows[0]?.power_dt_hours || 1} /> },
     { key: "fault_backup_h", label: "Backup-fault", align: "right", render: (r) => <span className="text-crit">{fmtH(r.fault_backup_h)}</span> },
     { key: "trend", label: "Trend", sortAccessor: (r) => ({ worsening: 2, stable: 1, improving: 0 }[r.trend]), render: (r) => <TrendTag t={r.trend} /> },
@@ -177,8 +172,11 @@ export default function Page() {
             <div className="text-[12px] text-white/60">AREA1 · H1 2026 (Jan–Jun) · customer POV (INAP)</div>
           </div>
           <div className="text-right text-[12px] text-white/70">
-            <div className="inline-flex items-center gap-1.5 bg-white/10 rounded px-2 py-1"><span className="w-1.5 h-1.5 rounded-full bg-ok inline-block" /> Data as of {m.generated}</div>
-            <div className="text-white/50 mt-1">{fmtInt(m.n_sites)} sites · avail {m.avail_pct}%</div>
+            <div className="flex items-center gap-2 justify-end">
+              <LangToggle lang={lang} setLang={changeLang} />
+              <HelpButton lang={lang} />
+            </div>
+            <div className="inline-flex items-center gap-1.5 bg-white/10 rounded px-2 py-1 mt-1"><span className="w-1.5 h-1.5 rounded-full bg-ok inline-block" /> Data as of {m.generated}</div>
           </div>
         </div>
         <div className="max-w-[1360px] mx-auto px-4 sm:px-6 pb-2 space-y-1.5">
@@ -205,33 +203,33 @@ export default function Page() {
 
         {tab === "Overview" && (
           <>
-            <Card title="Availability vs target" note={`${scopeLabel} · INAP`}>
+            <Card title="Availability vs target" note={`${scopeLabel} · INAP`} tip="availability" lang={lang}>
               <AvailBand avail={agg.avail} target={agg.target} gap={agg.gap} />
             </Card>
 
             <div className="grid md:grid-cols-2 gap-6">
-              <Card title="What causes the availability gap?" note="Share of total downtime by cause">
+              <Card title="What causes the availability gap?" note="Share of total downtime by cause" tip="cause" lang={lang}>
                 <CauseMix cause_pct={agg.cause_pct} />
                 <div className="mt-3 text-[12px] text-slate"><b className="text-navy">Power is the #1 cause</b> at {agg.cause_pct.power}% — larger than transport and RAN combined. It is the highest-leverage lever to close the availability gap.</div>
               </Card>
-              <Card title="Power downtime — whose fault?" note="Where CAPEX can actually help">
+              <Card title="Power downtime — whose fault?" note="Where CAPEX can actually help" tip="fault" lang={lang}>
                 <FaultSplit fault={agg.fault} fault_pct={agg.fault_pct} />
                 <div className="mt-3 text-[12px] text-slate"><b className="text-navy">{agg.fault_pct.backup}%</b> is backup-fault → addressable by autonomy CAPEX. The PLN slice needs escalation, not CAPEX; unverified needs field checks.</div>
               </Card>
             </div>
 
-            <Card title="Why backup fails: outage duration, not battery age" note="Fraction of PLN outages where the site went down">
+            <Card title="Why backup fails: PLN-down exposure, not battery age" note="% of site-months with any NE-dark, by PLN-down duration · estate-level" tip="driver" lang={lang}>
               <div className="grid md:grid-cols-2 gap-6 items-center">
                 <DriverBars duration_corr={drivers} />
                 <div className="text-[13px] text-slate space-y-2">
-                  <p><b className="text-navy">Backup failure scales with outage duration</b> — from ~13% for short dips to ~80% for multi-hour outages. Battery autonomy runs out; the site drops.</p>
+                  <p><b className="text-navy">Backup failure scales with PLN-down exposure</b> — from ~19% at light exposure to ~73% at heavy (&gt;12h/mo) exposure. Battery autonomy runs out; the site drops.</p>
                   <p>Battery <b>age is flat</b> across the estate (~29% at every age) and Lithium vs VRLA is identical — so the fix is <b className="text-navy">not "replace old batteries."</b></p>
                   <p>Genset roughly halves dark hours ({m.backup_drivers.genset_effect.with.avg_dark_h}h with vs {m.backup_drivers.genset_effect.without.avg_dark_h}h without). <b className="text-navy">CAPEX case = add autonomy (genset / larger battery) at sites facing long outages.</b></p>
                 </div>
               </div>
             </Card>
 
-            <Card title="Power site-dark over time" note={`Scope: ${scopeSeries?.name}`}>
+            <Card title="Power site-dark over time" note={`Scope: ${scopeSeries?.name}`} tip="power_dark" lang={lang}>
               <TimeSeries dates={dates} dt={scopeSeries.dt} out={scopeSeries.out} />
             </Card>
 
@@ -252,11 +250,11 @@ export default function Page() {
 
         {tab === "Sites" && (
           <>
-            <Filters {...{ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly }} count={sites.length} total={rankSites.length}
+            <Filters {...{ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly, lang }} count={sites.length} total={rankSites.length}
               onClear={() => { setF({ pattern: "", repeat: "", backup: "", trend: "", fault: "", minOut: "", minDt: "", badgrid: false }); setQ(""); }}
               onExport={() => exportCsv(sites.slice(0, 5000), CSV_COLS, `sites_${Date.now()}.csv`)} />
             <div className="grid md:grid-cols-2 gap-6">
-              <Card title="Pattern × repeat of selection"><PatternMatrix sites={sites} onPick={(p, r) => setF((x) => ({ ...x, pattern: p, repeat: r }))} /></Card>
+              <Card title="Pattern × repeat of selection" tip="pattern" lang={lang}><PatternMatrix sites={sites} onPick={(p, r) => setF((x) => ({ ...x, pattern: p, repeat: r }))} /></Card>
               <Card title="Top clusters in selection"><GroupBars rows={clustersG} labelKey="cluster" n={10} onPick={(r) => r && setG((x) => ({ ...x, cluster: clustersG.find((c) => c.cluster.replace(/^TO /, "") === r.name)?.cluster || "" }))} /></Card>
             </div>
             <DataTable columns={siteCols} rows={sites} maxRows={500} initialSort={{ key: "power_dt_hours", dir: "desc" }} onRowClick={setSel} />
@@ -275,7 +273,7 @@ export default function Page() {
           </>
         )}
         {tab === "Worklist" && (
-          <Card title="Verification worklist" note={`${fmtInt(worklist.length)} sites: no event data or likely-dead (excluded from ranking)`}>
+          <Card title="Verification worklist" note={`${fmtInt(worklist.length)} sites: no event data or likely-dead (excluded from ranking)`} tip="worklist" lang={lang}>
             <div className="flex justify-between items-center mb-3 gap-3 flex-wrap">
               <p className="text-[13px] text-slate max-w-2xl">Sites with measured downtime but no PLN-event record, or that appear permanently dark (likely decommissioned/misconfigured). Field-verify before drawing any power conclusion.</p>
               <button onClick={() => exportCsv(worklist, CSV_COLS, `worklist_${Date.now()}.csv`)} className="shrink-0 bg-navy text-white text-[12px] rounded px-3 py-1.5 hover:bg-navy/90">Export CSV</button>
@@ -305,8 +303,8 @@ function groupRows(sites, level, data, rdt, thr, sliceSum, full) {
   const map = new Map();
   sites.forEach((s) => {
     const k = s[level]; if (!k) return;
-    const d = map.get(k) || { [level]: k, nop: s.nop, region: s.region, n_sites: 0, n_outage: 0, n_ne_down: 0, power_dt_hours: 0, bad_grid_sites: 0, insuff_sites: 0, fault_backup_h: 0, av_sum: 0, tg_sum: 0, ac: 0 };
-    d.n_sites++; d.n_outage += s.n_outage; d.n_ne_down += s.n_ne_down; d.power_dt_hours += s._rdt;
+    const d = map.get(k) || { [level]: k, nop: s.nop, region: s.region, n_sites: 0, pln_down_h: 0, ne_dark_h: 0, power_dt_hours: 0, bad_grid_sites: 0, insuff_sites: 0, fault_backup_h: 0, av_sum: 0, tg_sum: 0, ac: 0 };
+    d.n_sites++; d.pln_down_h += s.pln_down_h; d.ne_dark_h += s.ne_dark_h; d.power_dt_hours += s._rdt;
     d.bad_grid_sites += (s._rdt >= T && s._rdt > 0) ? 1 : 0; d.insuff_sites += s.backup_insufficient === true ? 1 : 0;
     d.fault_backup_h += s.fault === "backup" ? s._rdt : 0;
     if (s.avail_pct != null) { d.av_sum += s.avail_pct; d.tg_sum += s.target_pct; d.ac++; }
@@ -314,7 +312,7 @@ function groupRows(sites, level, data, rdt, thr, sliceSum, full) {
   });
   return [...map.values()].map((d) => {
     const meta = metaLook[d[level]] || {};
-    return { ...d, power_dt_hours: Math.round(d.power_dt_hours), fault_backup_h: Math.round(d.fault_backup_h),
+    return { ...d, power_dt_hours: Math.round(d.power_dt_hours), pln_down_h: Math.round(d.pln_down_h), ne_dark_h: Math.round(d.ne_dark_h), fault_backup_h: Math.round(d.fault_backup_h),
       avail_pct: d.ac ? d.av_sum / d.ac : null, avail_gap: d.ac ? (d.tg_sum - d.av_sum) / d.ac : null,
       trend: meta.trend || "stable", earlier_h: meta.earlier_h, recent_h: meta.recent_h, delta_pct: meta.delta_pct };
   }).sort((a, b) => b.power_dt_hours - a.power_dt_hours);
@@ -341,7 +339,7 @@ function GeoBar({ g, setG, opts, saveRegion }) {
     </div>
   );
 }
-function Filters({ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly, count, total, onClear, onExport }) {
+function Filters({ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly, lang, count, total, onClear, onExport }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const Sel = ({ k, label, opts }) => (
     <select value={f[k]} onChange={(e) => set(k, e.target.value)} className="border border-line rounded-md px-2 py-1.5 text-[12px] bg-card text-navy">
@@ -356,9 +354,9 @@ function Filters({ f, setF, q, setQ, thr, setThr, m, evOnly, setEvOnly, count, t
         <Sel k="pattern" label="Any pattern" opts={Object.keys(PATTERN).map((k) => ({ v: k, l: PATTERN[k].label }))} />
         <Sel k="repeat" label="Any repeat" opts={[{ v: "chronic", l: "Chronic" }, { v: "intermittent", l: "Intermittent" }, { v: "one_off", l: "One-off" }]} />
         <Sel k="trend" label="Any trend" opts={[{ v: "worsening", l: "Worsening" }, { v: "improving", l: "Improving" }, { v: "stable", l: "Stable" }]} />
-        <span className="text-mut">Min out</span><input type="number" value={f.minOut} onChange={(e) => set("minOut", e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" placeholder="0" />
+        <span className="text-mut">Min PLN-h</span><input type="number" value={f.minOut} onChange={(e) => set("minOut", e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" placeholder="0" />
         <span className="text-mut">Min dt(h)</span><input type="number" value={f.minDt} onChange={(e) => set("minDt", e.target.value)} className="border border-line rounded px-1.5 py-1 w-14 text-[12px]" placeholder="0" />
-        <label className="flex items-center gap-1.5 text-slate cursor-pointer text-[12px]"><input type="checkbox" checked={evOnly} onChange={(e) => setEvOnly(e.target.checked)} className="accent-amber" />Event-confirmed only</label>
+        <label className="flex items-center gap-1.5 text-slate cursor-pointer text-[12px]"><input type="checkbox" checked={evOnly} onChange={(e) => setEvOnly(e.target.checked)} className="accent-amber" />Event-confirmed only</label><InfoTip id="evonly" lang={lang} />
         <div className="ml-auto flex items-center gap-3 text-[12px]">
           <span className="text-mut"><span className="tabular font-semibold text-navy">{fmtInt(count)}</span> / {fmtInt(total)}</span>
           <button onClick={onExport} className="bg-navy text-white rounded px-3 py-1.5 hover:bg-navy/90">Export CSV</button>
@@ -383,10 +381,10 @@ function ChangeList({ rows, onPick }) {
     </div>
   );
 }
-const Card = ({ title, note, children }) => (
+const Card = ({ title, note, tip, lang, children }) => (
   <section className="bg-card border border-line rounded-lg">
     <div className="px-4 py-3 border-b border-line flex items-baseline justify-between gap-2 flex-wrap">
-      <h3 className="text-[14px] font-semibold text-navy">{title}</h3>{note && <span className="text-[11px] text-mut">{note}</span>}
+      <h3 className="text-[14px] font-semibold text-navy flex items-center">{title}{tip && <InfoTip id={tip} lang={lang} />}</h3>{note && <span className="text-[11px] text-mut">{note}</span>}
     </div>
     <div className="p-4">{children}</div>
   </section>

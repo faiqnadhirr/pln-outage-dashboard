@@ -226,7 +226,7 @@ export function MapScatter({ sites, onPick }) {
       </svg>
       {hover && <div className="absolute pointer-events-none bg-ink text-white text-[11px] rounded px-2 py-1 shadow-lg"
         style={{ left: `${(hover.x / W) * 100}%`, top: `${(hover.y / H) * 100}%`, transform: "translate(-50%,-130%)" }}>
-        <div className="font-semibold">{hover.p.site_id}</div><div>{fmtH(hover.p.power_dt_hours)} · {hover.p.n_outage} outages</div></div>}
+        <div className="font-semibold">{hover.p.site_id}</div><div>{fmtH(hover.p.power_dt_hours)} · PLN-down {fmtH(hover.p.pln_down_h)}</div></div>}
       <div className="flex items-center gap-4 text-[11px] text-mut mt-2 flex-wrap">
         <span>{fmtInt(pts.length)} sites plotted</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-crit inline-block" /> high</span>
@@ -240,12 +240,12 @@ export function MapScatter({ sites, onPick }) {
 
 /* ---------- site drawer (with lazy events) ---------- */
 export function Drawer({ site, months, onClose }) {
-  const [events, setEvents] = useState(null); const [loading, setLoading] = useState(false);
+  const [bbt, setBbt] = useState(null); const [loading, setLoading] = useState(false);
   React.useEffect(() => {
-    if (!site) return; setEvents(null);
+    if (!site) return; setBbt(null);
     const slug = (site.cluster || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    if (!slug) { setEvents([]); return; } setLoading(true);
-    fetch(`/clusters/${slug}.json`).then((r) => r.ok ? r.json() : {}).then((o) => setEvents(o[site.site_id] || [])).catch(() => setEvents([])).finally(() => setLoading(false));
+    if (!slug) { setBbt(null); return; } setLoading(true);
+    fetch(`/clusters/${slug}.json`).then((r) => r.ok ? r.json() : {}).then((o) => setBbt((o[site.site_id] && o[site.site_id].bbt) || null)).catch(() => setBbt(null)).finally(() => setLoading(false));
   }, [site]);
   if (!site) return null;
   const Row = ({ k, v }) => <div className="flex justify-between py-1.5 border-b border-line/70 text-[13px]"><span className="text-mut">{k}</span><span className="text-navy font-medium tabular text-right">{v}</span></div>;
@@ -281,33 +281,32 @@ export function Drawer({ site, months, onClose }) {
             <Sparkline m={site.m} months={months} />
           </div>
           <section>
-            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">v1 · outage &amp; impact</h4>
-            <Row k="PLN outages (H1)" v={fmtInt(site.n_outage)} /><Row k="Led to network down" v={fmtInt(site.n_ne_down)} />
-            <Row k="Backup held (only mains fail)" v={fmtInt(site.n_only_mains)} /><Row k="Power site-dark (wall-clock)" v={fmtH(site.power_dt_hours)} />
+            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Power downtime &amp; impact</h4>
+            <Row k="PLN-down duration (BBT)" v={fmtH(site.pln_down_h)} /><Row k="NE-dark duration (backup failed)" v={<span className="text-crit">{fmtH(site.ne_dark_h)}</span>} />
+            <Row k="Backup run-time" v={fmtH(site.backup_h)} /><Row k="Power site-dark (availability)" v={fmtH(site.power_dt_hours)} />
             <Row k="Power NE-hours (severity, ×sectors)" v={fmtH(site.power_ne_hours)} /><Row k="Days with power incident" v={fmtInt(site.power_days)} />
             <Row k="Min power availability" v={site.min_ava_power == null ? "—" : site.min_ava_power + "%"} />
           </section>
           <section>
-            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">v2 · backup &amp; battery</h4>
-            <Row k="Backup verdict" v={site.backup_insufficient === true ? "Insufficient (site went down)" : site.backup_insufficient === false ? "Held" : "No event data"} />
+            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Backup &amp; battery</h4>
+            <Row k="Backup verdict" v={site.backup_insufficient === true ? "Insufficient (site went dark)" : site.backup_insufficient === false ? "Held (no NE-dark)" : "No BBT data"} />
+            <Row k="Autonomy (median hold before drop)" v={site.autonomy_h == null ? "—" : site.autonomy_h + "h"} />
+            <Row k="Repetitive (BBT flag)" v={site.repetitive ? "Yes" : "No"} />
             <Row k="Battery age (yr)" v={site.batt_age_yr ?? "—"} /><Row k="Battery type" v={site.batt_type ?? "—"} />
-            <Row k="Battery qty" v={site.batt_qty ?? "—"} /><Row k="Genset" v={site.genset_fix ?? "—"} /><Row k="Target max downtime/yr (h)" v={site.target_max_h ?? "—"} />
+            <Row k="Battery qty" v={site.batt_qty ?? "—"} /><Row k="Genset" v={site.genset_fix ?? "—"} /><Row k="Target max downtime/yr (h)" v={site.target_max_h == null ? "—" : Math.round(site.target_max_h*10)/10} />
           </section>
           <section>
-            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">v3 · traffic exposure</h4>
-            <Row k="Payload (GB, Jan–Apr)" v={fmtInt(site.payload_gb)} /><Row k="Lost-GB proxy" v={fmtInt(site.lost_gb)} />
-          </section>
-          <section>
-            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Recent PLN events {events ? `(${events.length})` : ""}</h4>
-            {loading && <div className="text-mut text-[12px]">Loading events…</div>}
-            {events && events.length === 0 && <div className="text-mut text-[12px]">No event records for this site.</div>}
-            {events && events.length > 0 && (
+            <h4 className="text-[11px] uppercase tracking-wide text-mut font-semibold mb-1">Monthly BBT (hours)</h4>
+            {loading && <div className="text-mut text-[12px]">Loading…</div>}
+            {!loading && !bbt && <div className="text-mut text-[12px]">No BBT record for this site.</div>}
+            {bbt && (
               <div className="border border-line rounded-md overflow-hidden">
-                <table className="w-full text-[11px]"><thead><tr className="bg-surface text-mut"><th className="text-left px-2 py-1">Start</th><th className="text-right px-2 py-1">Backup</th><th className="text-left px-2 py-1">Outcome</th></tr></thead>
-                  <tbody>{events.slice(0, 50).map((e, i) => (
-                    <tr key={i} className="border-t border-line/70"><td className="px-2 py-1 tabular">{e.t || "—"}</td>
-                      <td className="px-2 py-1 text-right tabular">{Math.round(e.d / 60)}m</td>
-                      <td className="px-2 py-1">{/NE Down/.test(e.f) ? <span className="text-crit">site down</span> : <span className="text-ok">held</span>}</td></tr>))}
+                <table className="w-full text-[11px]"><thead><tr className="bg-surface text-mut"><th className="text-left px-2 py-1">Month</th><th className="text-right px-2 py-1">PLN-down</th><th className="text-right px-2 py-1">NE-dark</th><th className="text-right px-2 py-1">Backup</th></tr></thead>
+                  <tbody>{months.map((mo, i) => (
+                    <tr key={i} className="border-t border-line/70"><td className="px-2 py-1">{mo}</td>
+                      <td className="px-2 py-1 text-right tabular">{fmt1(bbt.pln[i])}</td>
+                      <td className={`px-2 py-1 text-right tabular ${bbt.ne[i] > 0 ? "text-crit" : ""}`}>{fmt1(bbt.ne[i])}</td>
+                      <td className="px-2 py-1 text-right tabular">{fmt1(bbt.bk[i])}</td></tr>))}
                   </tbody></table>
               </div>
             )}
@@ -419,7 +418,8 @@ export function GensetDonut({ held, down }) {
 
 /* ---------- v4: availability band ---------- */
 export function AvailBand({ avail, target, gap }) {
-  const pct = (v) => `${v?.toFixed(2)}%`;
+  if (avail == null || target == null) return <div className="text-mut text-sm">No availability data in this scope.</div>;
+  const pct = (v) => `${v.toFixed(2)}%`;
   const bad = gap > 0;
   return (
     <div className="flex items-end gap-6 flex-wrap">
