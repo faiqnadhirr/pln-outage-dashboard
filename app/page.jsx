@@ -6,10 +6,10 @@ import {
   Kpi, DataTable, TopClustersBar, PatternMatrix, TimeSeries, GroupBars,
   RangeControl, Drawer, exportCsv, AvailBand, CauseMix, FaultSplit, DriverBars,
 } from "@/components/parts";
-import { HelpButton, LangToggle, InfoTip } from "@/components/help";
+import { HelpButton, LangToggle, InfoTip, DocsView } from "@/components/help";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), { ssr: false, loading: () => <div className="text-mut text-sm p-6">Loading map…</div> });
-const TABS = ["Overview", "Sites", "Clusters", "NOPs", "Worklist", "Map"];
+const TABS = ["Overview", "Sites", "Clusters", "NOPs", "Worklist", "Map", "Docs"];
 const slugOf = (c) => (c || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const CSV_COLS = [
   { key: "site_id", label: "Site ID" }, { key: "city", label: "City" }, { key: "cluster", label: "Cluster (TO)" }, { key: "nop", label: "NOP" },
@@ -286,6 +286,7 @@ export default function Page() {
             <LeafletMap sites={gSites} onPick={setSel} />
           </Card>
         )}
+        {tab === "Docs" && <DocsView lang={lang} />}
       </main>
 
       <footer className="max-w-[1360px] mx-auto px-4 sm:px-6 py-6 text-[11px] text-mut">
